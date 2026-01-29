@@ -1,0 +1,34 @@
+# ROS 2 build artifacts
+build/
+install/
+log/
+COLCON_IGNORE
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C++
+*.o
+*.obj
+*.so
+*.a
+*.lib
+*.dll
+*.dylib
+
+# Editor/IDE
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+
+# User specific
+.gemini/
+
+# Ignore everything in src by default
+src/*
+# Allow drone_offboard
+!src/drone_offboard/
