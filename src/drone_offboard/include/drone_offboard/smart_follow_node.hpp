@@ -27,14 +27,51 @@
 #include <chrono>
 #include <cmath>
 #include <algorithm>
+#include <mutex>
+#include <stdexcept>
 
 // ArduPilot Control Algorithms
 #include "drone_offboard/ap_control.hpp"
 #include "drone_offboard/ap_follow.hpp"
 
-// Hằng số vật lý
-constexpr double R_EARTH = 6378137.0;
-constexpr double DEG_TO_RAD = M_PI / 180.0;
+// ============================================================================
+// PHYSICAL CONSTANTS
+// ============================================================================
+constexpr double R_EARTH = 6378137.0;           // Earth radius in meters (WGS84)
+constexpr double DEG_TO_RAD = M_PI / 180.0;     // Degrees to radians conversion
+
+// ============================================================================
+// CONTROL LOOP CONSTANTS
+// ============================================================================
+constexpr double CONTROL_LOOP_DT_DEFAULT = 0.02;        // Default dt for 50Hz loop (seconds)
+constexpr double CONTROL_LOOP_DT_MIN = 0.001;           // Minimum valid dt (seconds)
+constexpr double CONTROL_LOOP_DT_MAX = 0.5;             // Maximum valid dt (seconds)
+
+// ============================================================================
+// FILTER CONSTANTS
+// ============================================================================
+constexpr double ACCEL_FILTER_ALPHA = 0.15;             // Acceleration low-pass filter coefficient
+constexpr double ACCEL_MAGNITUDE_CLAMP = 5.0;           // Maximum acceleration magnitude (m/s²)
+constexpr double YAW_RATE_FILTER_ALPHA = 0.3;           // Yaw rate low-pass filter coefficient
+
+// ============================================================================
+// THRESHOLD CONSTANTS
+// ============================================================================
+constexpr double GPS_DT_MIN_VALID = 0.01;               // Minimum valid GPS update interval (seconds)
+constexpr double GPS_DT_MAX_VALID = 2.0;                // Maximum valid GPS update interval (seconds)
+constexpr double SPEED_THRESHOLD_HEADING = 0.5;         // Min speed to calculate heading (m/s)
+constexpr double SPEED_THRESHOLD_OFFSET = 0.3;          // Min speed for offset calculation (m/s)
+constexpr double GIMBAL_TIMEOUT_SEC = 0.5;              // Gimbal message timeout (seconds)
+
+// ============================================================================
+// SAFETY LIMITS
+// ============================================================================
+constexpr double MAX_TARGET_VELOCITY = 50.0;            // Max valid target velocity (m/s) ~180 km/h
+constexpr double MAX_TARGET_ACCELERATION = 10.0;        // Max valid target acceleration (m/s²) ~1G
+constexpr double CMD_VEL_FORWARD_MAX = 5.0;             // Max forward velocity command (m/s)
+constexpr double CMD_VEL_LATERAL_MAX = 3.0;             // Max lateral velocity command (m/s)
+constexpr double CMD_VEL_VERTICAL_MAX = 1.5;            // Max vertical velocity command (m/s)
+constexpr double CMD_YAW_RATE_MAX = 0.8;                // Max yaw rate command (rad/s)
 
 // --- Alpha-Beta Filter Class ---
 // Bộ lọc thông minh ước lượng cả position và velocity
@@ -61,31 +98,31 @@ public:
     }
 };
 
-// Struct lưu trạng thái mục tiêu (Enhanced với Eigen)
+// Target state structure (Enhanced with Eigen)
 struct TargetState {
     double lat = 0.0;
     double lon = 0.0;
-    double alt = 0.0;                    // Altitude MSL từ GPS
-    double heading_rad = 0.0;            // Hướng di chuyển (ROS ENU: 0=East, PI/2=North)
-    double yaw_rate = 0.0;               // Tốc độ quay của mục tiêu (rad/s)
+    double alt = 0.0;                    // Altitude MSL from GPS
+    double heading_rad = 0.0;            // Movement heading (ROS ENU: 0=East, PI/2=North)
+    double yaw_rate = 0.0;               // Target rotation rate (rad/s)
     rclcpp::Time last_update;
     bool valid = false;
 };
 
-// Struct lưu vị trí trong Map-ENU frame (QUAN TRỌNG!)
-// Cả drone và target đều được convert về frame này
+// Position in Map-ENU frame (CRITICAL!)
+// Both drone and target are converted to this frame
 struct MapPosition {
-    Eigen::Vector3d pos_enu = Eigen::Vector3d::Zero();    // Position (East, North, Up) trong map frame
+    Eigen::Vector3d pos_enu = Eigen::Vector3d::Zero();    // Position (East, North, Up) in map frame
     Eigen::Vector3d vel_enu = Eigen::Vector3d::Zero();    // Velocity (East, North, Up)
     Eigen::Vector3d accel_enu = Eigen::Vector3d::Zero();  // Acceleration (East, North, Up)
 };
 
-// Struct lưu lệnh điều khiển sau tính toán
+// Navigation command structure
 struct NavCommand {
-    double vel_forward; // Vận tốc tới (Body Frame)
-    double vel_left;    // Vận tốc ngang (Body Frame)
-    double vel_up;      // Vận tốc lên (Body Frame)
-    double yaw_rate;    // Tốc độ xoay (rad/s)
+    double vel_forward; // Forward velocity (Body Frame)
+    double vel_left;    // Lateral velocity (Body Frame)
+    double vel_up;      // Vertical velocity (Body Frame)
+    double yaw_rate;    // Rotation rate (rad/s)
 };
 
 class SmartFollowNode : public rclcpp::Node {
@@ -120,6 +157,7 @@ private:
     void stop_drone();
 
     /* --- HELPERS (PRIVATE) --- */
+    void gps_to_map_enu_internal(double lat, double lon, double& e, double& n) const;  // Internal GPS conversion (no lock)
     void apply_kinematic_limits(double& desired_vel, double& last_vel, double& last_acc, 
                                 double dt, double max_acc, double max_jerk);
     void apply_sqrt_position_shaping();  // ArduPilot sqrt controller for position
@@ -215,18 +253,11 @@ private:
     // Advanced Features - Terrain Following
     bool param_terrain_follow_enable_;
     
-    // Command History (for velocity shaping)
-    double last_cmd_forward_ = 0.0;
-    double last_cmd_left_ = 0.0;
-    double last_cmd_up_ = 0.0;
-    double last_cmd_yaw_ = 0.0;
-    rclcpp::Time last_control_time_;
+    // Thread safety mutex for shared state between callbacks and control loop
+    mutable std::mutex state_mutex_;
     
-    // Acceleration History (for jerk limiting - 2-stage shaping)
-    double last_accel_forward_ = 0.0;
-    double last_accel_left_ = 0.0;
-    double last_accel_up_ = 0.0;
-    double last_accel_yaw_ = 0.0;
+    // Control timing
+    rclcpp::Time last_control_time_;
     
     // Smoothed adaptive distance (low-pass filtered)
     double filtered_desired_dist_ = 5.0;
@@ -247,7 +278,6 @@ private:
     
     // Follow Estimator (ArduPilot AP_Follow style)
     ap_follow::FollowEstimator follow_estimator_;
-    bool use_ap_estimator_ = true;  // Enable/disable AP_Follow estimator
 };
 
 #endif // SMART_FOLLOW_NODE_HPP_

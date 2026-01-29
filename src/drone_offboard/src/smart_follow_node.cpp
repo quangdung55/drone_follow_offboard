@@ -177,8 +177,9 @@ void SmartFollowNode::setup_pub_sub() {
 // --- CALLBACK IMPLEMENTATION ---
 
 void SmartFollowNode::cb_global_origin(const geographic_msgs::msg::GeoPointStamped::SharedPtr msg) {
-    // Nhận gốc tọa độ ENU cố định từ EKF của ArduPilot
-    // Chỉ cập nhật 1 lần (origin không đổi trong suốt flight)
+    // Receive fixed ENU origin from ArduPilot EKF
+    // Only update once (origin doesn't change during flight)
+    std::lock_guard<std::mutex> lock(state_mutex_);
     if (!origin_ready_) {
         origin_lat_ = msg->position.latitude;
         origin_lon_ = msg->position.longitude;
@@ -190,16 +191,18 @@ void SmartFollowNode::cb_global_origin(const geographic_msgs::msg::GeoPointStamp
 }
 
 void SmartFollowNode::cb_drone_gps(const sensor_msgs::msg::NavSatFix::SharedPtr msg) {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    
     drone_lat_ = msg->latitude;
     drone_lon_ = msg->longitude;
     drone_alt_ = msg->altitude;  // Absolute altitude (MSL)
     
-    // Phải có origin trước mới convert được!
+    // Must have origin before conversion!
     if (!origin_ready_) return;
     
-    // Convert GPS → Map-ENU frame
+    // Convert GPS -> Map-ENU frame
     double e, n;
-    gps_to_map_enu(msg->latitude, msg->longitude, e, n);
+    gps_to_map_enu_internal(msg->latitude, msg->longitude, e, n);
     
     drone_map_.pos_enu.x() = e;  // East
     drone_map_.pos_enu.y() = n;  // North
@@ -209,10 +212,12 @@ void SmartFollowNode::cb_drone_gps(const sensor_msgs::msg::NavSatFix::SharedPtr 
 }
 
 void SmartFollowNode::cb_drone_pose(const geometry_msgs::msg::PoseStamped::SharedPtr msg) {
-    // Lấy Relative Altitude (từ EKF của ArduPilot - so với Home)
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    
+    // Get Relative Altitude (from ArduPilot EKF - relative to Home)
     drone_relative_alt_ = msg->pose.position.z;
 
-    // Lấy Yaw từ Quaternion (sử dụng Eigen - chính xác hơn tf2)
+    // Extract Yaw from Quaternion using Eigen (more accurate than tf2)
     Eigen::Quaterniond q(
         msg->pose.orientation.w,
         msg->pose.orientation.x,
@@ -220,7 +225,7 @@ void SmartFollowNode::cb_drone_pose(const geometry_msgs::msg::PoseStamped::Share
         msg->pose.orientation.z
     );
     
-    // Extract yaw từ quaternion (tránh gimbal lock)
+    // Extract yaw from quaternion (avoids gimbal lock)
     double siny_cosp = 2.0 * (q.w() * q.z() + q.x() * q.y());
     double cosy_cosp = 1.0 - 2.0 * (q.y() * q.y() + q.z() * q.z());
     drone_yaw_ = std::atan2(siny_cosp, cosy_cosp);
@@ -229,63 +234,63 @@ void SmartFollowNode::cb_drone_pose(const geometry_msgs::msg::PoseStamped::Share
 }
 
 void SmartFollowNode::cb_target_gps(const sensor_msgs::msg::NavSatFix::SharedPtr msg) {
-    // Phải có origin trước mới convert được!
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    
+    // Must have origin before conversion!
     if (!origin_ready_) return;
     
     double now_sec = this->now().seconds();
     double dt = target_.valid ? (now_sec - target_.last_update.seconds()) : 0.0;
     
-    // Convert GPS → Map-ENU frame
+    // Convert GPS -> Map-ENU frame
     double e, n;
-    gps_to_map_enu(msg->latitude, msg->longitude, e, n);
+    gps_to_map_enu_internal(msg->latitude, msg->longitude, e, n);
     Eigen::Vector2d new_pos(e, n);
 
-    if (target_.valid && dt > 0.01 && dt < 2.0) {
-        // 1. Tính raw velocity từ position delta trong Map frame
+    if (target_.valid && dt > GPS_DT_MIN_VALID && dt < GPS_DT_MAX_VALID) {
+        // 1. Calculate raw velocity from position delta in Map frame
         Eigen::Vector2d delta = new_pos - target_map_.pos_enu.head<2>();
         Eigen::Vector2d raw_vel = delta / dt;
 
-        // 2. Alpha-Beta Filter cho velocity
+        // 2. Alpha-Beta Filter for velocity
         filter_vel_e_.update(raw_vel.x(), dt, param_filter_alpha_, param_filter_beta_);
         filter_vel_n_.update(raw_vel.y(), dt, param_filter_alpha_, param_filter_beta_);
         
-        // Lấy velocity đã lọc
+        // Get filtered velocity
         double old_vel_e = target_map_.vel_enu.x();
         double old_vel_n = target_map_.vel_enu.y();
         target_map_.vel_enu.x() = filter_vel_e_.x;  // East
         target_map_.vel_enu.y() = filter_vel_n_.x;  // North
 
-        // 3. Tính acceleration từ thay đổi velocity
-        double alpha_accel = 0.15;
+        // 3. Calculate acceleration from velocity change
         double instant_accel_e = (target_map_.vel_enu.x() - old_vel_e) / dt;
         double instant_accel_n = (target_map_.vel_enu.y() - old_vel_n) / dt;
-        target_map_.accel_enu.x() = alpha_accel * instant_accel_e + (1.0 - alpha_accel) * target_map_.accel_enu.x();
-        target_map_.accel_enu.y() = alpha_accel * instant_accel_n + (1.0 - alpha_accel) * target_map_.accel_enu.y();
+        target_map_.accel_enu.x() = ACCEL_FILTER_ALPHA * instant_accel_e + (1.0 - ACCEL_FILTER_ALPHA) * target_map_.accel_enu.x();
+        target_map_.accel_enu.y() = ACCEL_FILTER_ALPHA * instant_accel_n + (1.0 - ACCEL_FILTER_ALPHA) * target_map_.accel_enu.y();
         
-        // Giới hạn acceleration hợp lý (tránh spike từ GPS noise)
+        // Clamp acceleration magnitude (avoid spikes from GPS noise)
         double accel_mag = target_map_.accel_enu.head<2>().norm();
-        if (accel_mag > 5.0) {
-            target_map_.accel_enu.head<2>() *= (5.0 / accel_mag);
+        if (accel_mag > ACCEL_MAGNITUDE_CLAMP) {
+            target_map_.accel_enu.head<2>() *= (ACCEL_MAGNITUDE_CLAMP / accel_mag);
         }
 
-        // 4. Filter Altitude cho Terrain Following
+        // 4. Filter Altitude for Terrain Following
         filter_alt_.update(msg->altitude, dt, param_filter_alpha_, param_filter_beta_);
         target_.alt = filter_alt_.x;
         target_map_.pos_enu.z() = filter_alt_.x - origin_alt_;
 
-        // 5. Tính Heading và Yaw Rate từ velocity đã lọc
+        // 5. Calculate Heading and Yaw Rate from filtered velocity
         double speed = target_map_.vel_enu.head<2>().norm();
-        if (speed > 0.5) {
+        if (speed > SPEED_THRESHOLD_HEADING) {
             double new_heading = std::atan2(target_map_.vel_enu.y(), target_map_.vel_enu.x());
             
-            // Tính Yaw Rate (wrap angle properly)
+            // Calculate Yaw Rate (wrap angle properly)
             double diff_heading = new_heading - target_.heading_rad;
             if (diff_heading > M_PI) diff_heading -= 2.0 * M_PI;
             if (diff_heading < -M_PI) diff_heading += 2.0 * M_PI;
             
-            // Low-pass filter yaw rate để tránh noise
-            double alpha_yaw = 0.3;
-            target_.yaw_rate = alpha_yaw * (diff_heading / dt) + (1.0 - alpha_yaw) * target_.yaw_rate;
+            // Low-pass filter yaw rate to avoid noise
+            target_.yaw_rate = YAW_RATE_FILTER_ALPHA * (diff_heading / dt) + (1.0 - YAW_RATE_FILTER_ALPHA) * target_.yaw_rate;
             target_.heading_rad = new_heading;
         } else {
             target_.yaw_rate = 0.0;
@@ -315,12 +320,14 @@ void SmartFollowNode::cb_gimbal_angle(const geometry_msgs::msg::Point::SharedPtr
 }
 
 void SmartFollowNode::cb_flight_mode(const std_msgs::msg::String::SharedPtr msg) {
+    std::lock_guard<std::mutex> lock(state_mutex_);
     current_flight_mode_ = msg->data;
-    // ArduPilot mode "GUIDED" cho phép velocity control
+    // ArduPilot mode "GUIDED" allows velocity control
     is_guided_ = (msg->data == "GUIDED" || msg->data == "4");  // 4 = GUIDED mode number
 }
 
 void SmartFollowNode::cb_armed_status(const std_msgs::msg::Bool::SharedPtr msg) {
+    std::lock_guard<std::mutex> lock(state_mutex_);
     is_armed_ = msg->data;
 }
 
@@ -335,13 +342,21 @@ void SmartFollowNode::gps_to_enu_delta(double lat_ref, double lon_ref, double la
     d_east  = d_lon * R_EARTH * std::cos(lat0_rad);
 }
 
-// Helper: Convert GPS → Map-ENU (dùng origin cố định)
+// Helper: Convert GPS -> Map-ENU (public interface with origin check)
 void SmartFollowNode::gps_to_map_enu(double lat, double lon, double& e, double& n) const {
+    if (!origin_ready_) {
+        throw std::runtime_error("gps_to_map_enu called before origin is ready");
+    }
+    gps_to_map_enu_internal(lat, lon, e, n);
+}
+
+// Internal helper: Convert GPS -> Map-ENU (assumes origin is ready, no lock needed)
+void SmartFollowNode::gps_to_map_enu_internal(double lat, double lon, double& e, double& n) const {
     double d_lat = (lat - origin_lat_) * DEG_TO_RAD;
     double d_lon = (lon - origin_lon_) * DEG_TO_RAD;
     double lat0_rad = origin_lat_ * DEG_TO_RAD;
 
-    n = d_lat * R_EARTH;                    // North
+    n = d_lat * R_EARTH;                      // North
     e = d_lon * R_EARTH * std::cos(lat0_rad); // East
 }
 
@@ -351,8 +366,8 @@ NavCommand SmartFollowNode::calculate_kinematics() {
     // Get current time for dt calculation
     double now_sec = this->now().seconds();
     double dt = now_sec - last_control_time_.seconds();
-    if (dt <= 0.001 || dt > 0.5) {
-        dt = 0.02;  // Default to 50Hz if invalid
+    if (dt <= CONTROL_LOOP_DT_MIN || dt > CONTROL_LOOP_DT_MAX) {
+        dt = CONTROL_LOOP_DT_DEFAULT;  // Default to 50Hz if invalid
     }
 
     // --- 1. KINEMATIC PREDICTION WITH ACCELERATION ---
@@ -371,37 +386,37 @@ NavCommand SmartFollowNode::calculate_kinematics() {
         double raw_dist = param_follow_dist_min_ + param_dist_speed_gain_ * target_speed;
         raw_dist = std::clamp(raw_dist, param_follow_dist_min_, param_follow_dist_max_);
         
-        // Low-pass filter để tránh giật
-        double alpha_dist = 0.1;
-        filtered_desired_dist_ = alpha_dist * raw_dist + (1.0 - alpha_dist) * filtered_desired_dist_;
+        // Low-pass filter to avoid jerky motion
+        constexpr double ADAPTIVE_DIST_ALPHA = 0.1;
+        filtered_desired_dist_ = ADAPTIVE_DIST_ALPHA * raw_dist + (1.0 - ADAPTIVE_DIST_ALPHA) * filtered_desired_dist_;
         desired_dist = filtered_desired_dist_;
     }
 
-    // --- 3. CALCULATE FOLLOW OFFSET (Bay sau lưng target) ---
+    // --- 3. CALCULATE FOLLOW OFFSET (Fly behind target) ---
     Eigen::Vector2d target_offset = Eigen::Vector2d::Zero();
     
-    if (target_speed > 0.3) {
+    if (target_speed > SPEED_THRESHOLD_OFFSET) {
         // Offset = -Velocity_Direction * Distance
-        target_offset = -target_map_.vel_enu.head<2>().normalized() * desired_dist;
+        // Safe normalization: divide by speed instead of using normalized() to avoid NaN
+        target_offset = -target_map_.vel_enu.head<2>() / target_speed * desired_dist;
     }
-    // Khi target đứng yên: offset = 0 để hover tại chỗ
+    // When target is stationary: offset = 0 to hover in place
 
     // --- 4. ERROR VECTOR CALCULATION (MAP-FRAME PURE) ---
-    // KHÔNG CÒN GPS MATH TRONG CONTROL LOOP
-    // Cả drone và target đã được convert về Map-ENU trong callback
+    // No GPS math in control loop - both drone and target converted to Map-ENU in callbacks
     
     Eigen::Vector3d vec_error_enu = target_map_.pos_enu - drone_map_.pos_enu;
     
-    // Thêm prediction và offset
+    // Add prediction and offset
     vec_error_enu.x() += pred_offset.x() + target_offset.x();  // East
     vec_error_enu.y() += pred_offset.y() + target_offset.y();  // North
     
     // --- 5. TERRAIN FOLLOWING (Altitude relative to target) ---
     if (param_terrain_follow_enable_) {
-        // Bay cao hơn target một khoảng follow_height (trong Map frame)
+        // Fly above target by follow_height (in Map frame)
         vec_error_enu.z() = (target_map_.pos_enu.z() + param_follow_height_) - drone_map_.pos_enu.z();
     } else {
-        // Bay theo độ cao cố định so với home
+        // Fly at fixed altitude relative to home
         vec_error_enu.z() = param_follow_height_ - drone_relative_alt_;
     }
 
@@ -477,7 +492,10 @@ NavCommand SmartFollowNode::calculate_kinematics() {
 }
 
 void SmartFollowNode::control_loop() {
-    // Safety Checks - PHẢI có origin trước khi control!
+    // Acquire lock for thread-safe access to shared state
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    
+    // Safety Checks - Must have origin before controlling!
     if (!origin_ready_) {
         RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000, 
             "Waiting for EKF origin from /ap/gps_global_origin/filtered...");
@@ -490,14 +508,14 @@ void SmartFollowNode::control_loop() {
     }
 
     // Flight Mode Check (ArduPilot DDS Native)
-    // Nếu không phải GUIDED hoặc chưa Arm, reset state và không gửi lệnh
+    // If not GUIDED or not armed, reset state and don't send commands
     if (!is_guided_ || !is_armed_) {
-        // Reset kinematic shaping state để tránh jerk khi engage lại
+        // Reset kinematic shaping state to avoid jerk when re-engaging
         reset_shaping_state();
         return;
     }
 
-    // Timeout mục tiêu (configurable, AP_Follow style)
+    // Target timeout (configurable, AP_Follow style)
     double time_since_update = (this->now() - target_.last_update).seconds();
     if (time_since_update > param_timeout_) {
         RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000, 
@@ -509,7 +527,7 @@ void SmartFollowNode::control_loop() {
     // AP_Follow style: Check if estimate error is too large
     if (estimate_error_too_large()) {
         RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000, "Estimate error too large, resetting...");
-        // Reset filters và estimate
+        // Reset filters and estimate
         filter_vel_n_.reset(0.0);
         filter_vel_e_.reset(0.0);
     }
@@ -521,7 +539,7 @@ void SmartFollowNode::control_loop() {
     double yaw_rate_heading = 0.0;
 
     // Component 1: Gimbal Tracking (Reactive - keeps target centered)
-    bool gimbal_active = (this->now() - last_gimbal_msg_).seconds() < 0.5;
+    bool gimbal_active = (this->now() - last_gimbal_msg_).seconds() < GIMBAL_TIMEOUT_SEC;
     if (gimbal_active && std::abs(gimbal_pan_error_) > param_deadzone_) {
         yaw_rate_gimbal = -param_kp_yaw_ * gimbal_pan_error_;
     }
@@ -530,7 +548,7 @@ void SmartFollowNode::control_loop() {
     if (param_heading_blend_enable_ && target_.valid) {
         double target_speed = target_map_.vel_enu.head<2>().norm();
         
-        if (target_speed > 0.3) {
+        if (target_speed > SPEED_THRESHOLD_OFFSET) {
             double heading_error = target_.heading_rad - drone_yaw_;
             // Wrap angle to [-PI, PI]
             heading_error = std::atan2(std::sin(heading_error), std::cos(heading_error));
@@ -547,7 +565,7 @@ void SmartFollowNode::control_loop() {
     double now_sec = this->now().seconds();
     double dt = now_sec - last_control_time_.seconds();
     
-    if (dt > 0.001 && dt < 0.5) {
+    if (dt > CONTROL_LOOP_DT_MIN && dt < CONTROL_LOOP_DT_MAX) {
         ap_control::shape_vel_accel(
             yaw_rate_target,            // desired yaw rate
             0.0,                        // feedforward angular accel
@@ -568,11 +586,11 @@ void SmartFollowNode::control_loop() {
     
     last_control_time_ = this->now();
 
-    // Safety Clamps (Giới hạn vận tốc)
-    nav.vel_forward = std::clamp(nav.vel_forward, -5.0, 5.0);
-    nav.vel_left    = std::clamp(nav.vel_left,    -3.0, 3.0);
-    nav.vel_up      = std::clamp(nav.vel_up,      -1.5, 1.5);
-    nav.yaw_rate    = std::clamp(nav.yaw_rate,    -0.8, 0.8);
+    // Safety Clamps (Velocity limits)
+    nav.vel_forward = std::clamp(nav.vel_forward, -CMD_VEL_FORWARD_MAX, CMD_VEL_FORWARD_MAX);
+    nav.vel_left    = std::clamp(nav.vel_left,    -CMD_VEL_LATERAL_MAX, CMD_VEL_LATERAL_MAX);
+    nav.vel_up      = std::clamp(nav.vel_up,      -CMD_VEL_VERTICAL_MAX, CMD_VEL_VERTICAL_MAX);
+    nav.yaw_rate    = std::clamp(nav.yaw_rate,    -CMD_YAW_RATE_MAX, CMD_YAW_RATE_MAX);
 
     publish_cmd(nav);
 }
@@ -581,7 +599,7 @@ void SmartFollowNode::publish_cmd(const NavCommand& cmd) {
     geometry_msgs::msg::TwistStamped msg;
     msg.header.stamp = this->now();
     
-    // QUAN TRỌNG: "base_link" báo cho ArduPilot đây là vận tốc Body Frame
+    // IMPORTANT: "base_link" tells ArduPilot this is Body Frame velocity
     msg.header.frame_id = "base_link"; 
 
     msg.twist.linear.x = cmd.vel_forward;
@@ -639,47 +657,47 @@ void SmartFollowNode::apply_kinematic_limits(double& desired_vel, double& last_v
     last_vel = desired_vel;
 }
 
-// AP_Follow::estimate_error_too_large() - Kiểm tra xem estimate có quá sai lệch không
+// AP_Follow::estimate_error_too_large() - Check if estimate is too far off
 bool SmartFollowNode::estimate_error_too_large() const {
-    // Nếu chưa có target valid, không cần check
+    // If no valid target, no need to check
     if (!target_.valid) {
         return false;
     }
     
-    // Kiểm tra velocity của target có hợp lý không (dùng target_map_)
+    // Check if target velocity is reasonable
     double vel_horiz = target_map_.vel_enu.head<2>().norm();
     
-    // Kiểm tra acceleration có vượt ngưỡng không (spike từ GPS noise)
+    // Check if acceleration exceeds threshold (spike from GPS noise)
     double accel_horiz = target_map_.accel_enu.head<2>().norm();
     double accel_vert = std::abs(target_map_.accel_enu.z());
     
-    // Velocity quá lớn cho người/xe (> 50 m/s = 180 km/h)
-    if (vel_horiz > 50.0) {
+    // Velocity too large for person/vehicle
+    if (vel_horiz > MAX_TARGET_VELOCITY) {
         return true;
     }
     
-    // Acceleration quá lớn (> 10 m/s² - hơn 1G)
-    if (accel_horiz > 10.0 || accel_vert > 10.0) {
+    // Acceleration too large (> 1G)
+    if (accel_horiz > MAX_TARGET_ACCELERATION || accel_vert > MAX_TARGET_ACCELERATION) {
         return true;
     }
     
     return false;
 }
 
-// AP_Follow::calc_max_velocity_change() - Tính max velocity change dưới jerk-limited profile
+// AP_Follow::calc_max_velocity_change() - Calculate max velocity change under jerk-limited profile
 double SmartFollowNode::calc_max_velocity_change(double accel_max, double jerk_max, double timeout_sec) const {
-    // Thời gian để ramp up acceleration từ 0 đến accel_max
+    // Time to ramp up acceleration from 0 to accel_max
     const double t_jerk = accel_max / jerk_max;
     const double t_total_jerk = 2.0 * t_jerk;
     
     if (timeout_sec >= t_total_jerk) {
-        // Đủ thời gian cho trapezoidal profile: ramp up, constant, ramp down
+        // Enough time for trapezoidal profile: ramp up, constant, ramp down
         const double t_const = timeout_sec - t_total_jerk;
         const double delta_v_jerk = 0.5 * accel_max * t_jerk;
         const double delta_v_const = accel_max * t_const;
         return 2.0 * delta_v_jerk + delta_v_const;
     } else {
-        // Timeout quá ngắn: chỉ có triangular profile
+        // Timeout too short: only triangular profile
         const double t_half = timeout_sec * 0.5;
         return 0.5 * jerk_max * std::pow(t_half, 2);
     }
@@ -687,16 +705,6 @@ double SmartFollowNode::calc_max_velocity_change(double accel_max, double jerk_m
 
 // Reset all kinematic shaping state (called when disengaging)
 void SmartFollowNode::reset_shaping_state() {
-    // Reset legacy command history
-    last_cmd_forward_ = 0.0;
-    last_cmd_left_ = 0.0;
-    last_cmd_up_ = 0.0;
-    last_cmd_yaw_ = 0.0;
-    last_accel_forward_ = 0.0;
-    last_accel_left_ = 0.0;
-    last_accel_up_ = 0.0;
-    last_accel_yaw_ = 0.0;
-    
     // Reset ArduPilot shaping state
     shaped_vel_xy_.setZero();
     shaped_accel_xy_.setZero();

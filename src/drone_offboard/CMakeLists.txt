@@ -53,15 +53,39 @@ ament_target_dependencies(smart_follow_node
   tf2_geometry_msgs
 )
 
-install(TARGETS smart_follow_node smart_follow_lib
+install(TARGETS smart_follow_node
   DESTINATION lib/${PROJECT_NAME})
   
 install(DIRECTORY include/
   DESTINATION include)
 
+# Export library for downstream packages
+ament_export_targets(export_${PROJECT_NAME} HAS_LIBRARY_TARGET)
+ament_export_dependencies(
+  rclcpp
+  sensor_msgs
+  geometry_msgs
+  geographic_msgs
+  std_msgs
+  tf2
+  tf2_geometry_msgs
+  Eigen3
+)
+
+# Install library with export
+install(TARGETS smart_follow_lib
+  EXPORT export_${PROJECT_NAME}
+  ARCHIVE DESTINATION lib
+  LIBRARY DESTINATION lib
+  RUNTIME DESTINATION bin
+  INCLUDES DESTINATION include
+)
+
 # Testing
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
+  find_package(ament_lint_auto REQUIRED)
+  ament_lint_auto_find_test_dependencies()
   
   # Unit tests
   ament_add_gtest(test_smart_follow_node
@@ -83,6 +107,7 @@ if(BUILD_TESTING)
     rclcpp
     sensor_msgs
     geometry_msgs
+    geographic_msgs
     std_msgs
     tf2
     tf2_geometry_msgs
