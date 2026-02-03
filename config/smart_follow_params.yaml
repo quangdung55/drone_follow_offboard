@@ -1,0 +1,137 @@
+# ============================================================================
+# SMART FOLLOW NODE - CONFIGURATION PARAMETERS
+# ArduPilot-Style GPS Target Following with ROS 2
+# ============================================================================
+
+smart_follow_node:
+  ros__parameters:
+    
+    # ========================================================================
+    # BASIC FOLLOW PARAMETERS
+    # ========================================================================
+    follow_dist: 5.0          # Follow distance (m) - khoảng cách theo target
+    follow_height: 3.0        # Height above target (m) - bay cao hơn target
+    prediction_time: 0.5      # Prediction time (s) - dự đoán trước
+    timeout: 3.0              # Target timeout (s) - AP_FOLLOW style
+    
+    # ========================================================================
+    # CONTROL GAINS
+    # ========================================================================
+    kp_pos: 0.1               # Position P gain (AP_FOLLOW default: 0.1)
+    kp_vel_z: 1.5             # Vertical velocity P gain
+    kp_yaw: 0.05              # Gimbal yaw P gain
+    ff_lateral_gain: 0.85     # Lateral feedforward (0.0 - 1.0)
+    ff_centripetal_gain: 2.0  # Centripetal compensation gain
+    
+    # ========================================================================
+    # KINEMATIC CONSTRAINTS (AP_FOLLOW STYLE)
+    # Tách riêng cho từng trục như ArduPilot
+    # ========================================================================
+    
+    # Horizontal (XY) Limits
+    accel_max_ne: 2.5         # FOLL_ACCEL_NE: Max horizontal acceleration (m/s²)
+    jerk_max_ne: 5.0          # FOLL_JERK_NE: Max horizontal jerk (m/s³)
+    
+    # Vertical (Z) Limits
+    accel_max_d: 2.5          # FOLL_ACCEL_D: Max vertical acceleration (m/s²)
+    jerk_max_d: 5.0           # FOLL_JERK_D: Max vertical jerk (m/s³)
+    
+    # Heading (Yaw) Limits
+    accel_max_h: 90.0         # FOLL_ACCEL_H: Max angular acceleration (deg/s²)
+    jerk_max_h: 360.0         # FOLL_JERK_H: Max angular jerk (deg/s³)
+    
+    # ========================================================================
+    # GIMBAL PARAMETERS
+    # ========================================================================
+    gimbal_deadzone: 5.0      # Gimbal deadzone (degrees)
+    
+    # ========================================================================
+    # ALPHA-BETA FILTER (GPS NOISE REDUCTION)
+    # ========================================================================
+    filter_alpha: 0.6         # Position trust (0.6 = 60% measurement, 40% prediction)
+    filter_beta: 0.1          # Velocity update rate
+    
+    # ========================================================================
+    # ADVANCED FEATURES - ADAPTIVE DISTANCE
+    # Tự động tăng khoảng cách khi target di chuyển nhanh
+    # ========================================================================
+    adaptive_distance_enable: false
+    follow_dist_min: 3.0      # Minimum follow distance (m)
+    follow_dist_max: 15.0     # Maximum follow distance (m)
+    distance_speed_gain: 1.5  # Distance increase per m/s of target speed
+    
+    # ========================================================================
+    # ADVANCED FEATURES - HEADING BLENDING
+    # Kết hợp Gimbal tracking và Heading following
+    # ========================================================================
+    heading_blend_enable: false
+    heading_blend_weight: 0.3      # Blend weight (0.0 = gimbal only, 1.0 = heading only)
+    heading_follow_kp: 0.5         # Heading follow P gain
+    
+    # ========================================================================
+    # ADVANCED FEATURES - TERRAIN FOLLOWING
+    # Bay theo độ cao tương đối của target thay vì altitude cố định
+    # ========================================================================
+    terrain_follow_enable: true
+    
+    # ========================================================================
+    # ADVANCED FEATURES - OFFSET MODE (AP_FOLLOW STYLE)
+    # Chế độ offset giống ArduPilot AP_Follow
+    # ========================================================================
+    # offset_type:
+    #   0 = NED (Fixed offset in North-East-Down frame - formation flying)
+    #   1 = RELATIVE (Offset rotates with target heading - follow behind/beside)
+    #   2 = VELOCITY (Dynamic offset based on velocity direction - default)
+    
+    offset_type: 2            # 0=NED, 1=RELATIVE, 2=VELOCITY
+    offset_north: 0.0         # Static offset North (m) - used in NED/RELATIVE modes
+    offset_east: 0.0          # Static offset East (m) - used in NED/RELATIVE modes
+    offset_down: 0.0          # Static offset Down (m) - used in NED/RELATIVE modes
+    
+    # ========================================================================
+    # ADVANCED FEATURES - JITTER CORRECTION (AP_FOLLOW STYLE)
+    # Xử lý timing jitter từ GPS qua mạng (4G/WiFi)
+    # ========================================================================
+    jitter_correction_enable: true   # Enable timestamp jitter correction
+    jitter_max_lag_ms: 500           # Maximum transport lag (ms)
+    jitter_convergence_loops: 100    # Number of samples for convergence
+
+# ============================================================================
+# USE CASE EXAMPLES
+# ============================================================================
+
+# --- USE CASE 1: Simple Follow (Default) ---
+# offset_type: 2 (VELOCITY)
+# adaptive_distance_enable: false
+# → Drone flies behind target at fixed distance
+
+# --- USE CASE 2: Formation Flying (NED Mode) ---
+# offset_type: 0 (NED)
+# offset_north: -5.0   # 5m South of leader
+# offset_east: 3.0     # 3m East of leader
+# offset_down: -2.0    # 2m above leader
+# → Drone maintains fixed offset in global frame
+
+# --- USE CASE 3: Follow Behind (Relative Mode) ---
+# offset_type: 1 (RELATIVE)
+# offset_north: -5.0   # 5m behind target (body frame)
+# offset_east: 0.0     # Centered
+# offset_down: -2.0    # 2m above
+# → Offset rotates with target heading
+
+# --- USE CASE 4: High-Speed Tracking ---
+# adaptive_distance_enable: true
+# follow_dist_min: 5.0
+# follow_dist_max: 20.0
+# distance_speed_gain: 2.0
+# → Distance increases with target speed (5m at 0 m/s, 20m at 7.5 m/s)
+
+# --- USE CASE 5: Cinematic Mode ---
+# heading_blend_enable: true
+# heading_blend_weight: 0.7
+# → Smooth yaw motion combining gimbal and heading follow
+
+# --- USE CASE 6: GPS over 4G/WiFi (High Jitter) ---
+# jitter_correction_enable: true
+# jitter_max_lag_ms: 1000
+# → Corrects timestamp jitter from cellular network

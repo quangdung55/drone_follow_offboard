@@ -14,6 +14,7 @@ find_package(std_msgs REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
 find_package(Eigen3 REQUIRED)
+find_package(ardupilot_msgs REQUIRED)
 
 include_directories(include)
 include_directories(${EIGEN3_INCLUDE_DIR})
@@ -23,6 +24,7 @@ add_library(smart_follow_lib SHARED
   src/smart_follow_node.cpp
   src/ap_control.cpp
   src/ap_follow.cpp
+  src/JitterCorrection.cpp
 )
 
 ament_target_dependencies(smart_follow_lib
@@ -33,6 +35,7 @@ ament_target_dependencies(smart_follow_lib
   std_msgs
   tf2
   tf2_geometry_msgs
+  ardupilot_msgs
 )
 
 target_link_libraries(smart_follow_lib

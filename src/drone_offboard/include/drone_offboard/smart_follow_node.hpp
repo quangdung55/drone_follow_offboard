@@ -33,6 +33,8 @@
 // ArduPilot Control Algorithms
 #include "drone_offboard/ap_control.hpp"
 #include "drone_offboard/ap_follow.hpp"
+#include "drone_offboard/JitterCorrection.h"
+#include "ardupilot_msgs/msg/status.hpp"
 
 // ============================================================================
 // PHYSICAL CONSTANTS
@@ -80,6 +82,7 @@ public:
     double x = 0.0;  // Estimated position
     double v = 0.0;  // Estimated velocity
 
+    // Standard update with fixed beta
     void update(double measurement, double dt, double alpha, double beta) {
         if (dt <= 0.0) return;
         
@@ -90,6 +93,23 @@ public:
         double residual = measurement - x_pred;
         x = x_pred + alpha * residual;
         v = v + (beta * residual) / dt;
+    }
+    
+    // Adaptive beta update (faster response when residual is large)
+    void update_adaptive(double measurement, double dt, double alpha, 
+                        double beta_fast, double beta_slow, double residual_threshold) {
+        if (dt <= 0.0) return;
+        
+        // Prediction step
+        double x_pred = x + v * dt;
+        
+        // Update step with adaptive beta
+        double residual = measurement - x_pred;
+        double abs_r = std::abs(residual);
+        double beta_eff = (abs_r > residual_threshold) ? beta_fast : beta_slow;
+        
+        x = x_pred + alpha * residual;
+        v = v + (beta_eff * residual) / dt;
     }
     
     void reset(double measurement) {
@@ -147,8 +167,7 @@ private:
     void cb_drone_pose(const geometry_msgs::msg::PoseStamped::SharedPtr msg);
     void cb_target_gps(const sensor_msgs::msg::NavSatFix::SharedPtr msg);
     void cb_gimbal_angle(const geometry_msgs::msg::Point::SharedPtr msg);
-    void cb_flight_mode(const std_msgs::msg::String::SharedPtr msg);   // ArduPilot DDS
-    void cb_armed_status(const std_msgs::msg::Bool::SharedPtr msg);    // ArduPilot DDS
+    void cb_status(const ardupilot_msgs::msg::Status::SharedPtr msg);
 
     /* --- CORE LOGIC --- */
     void control_loop();
@@ -156,6 +175,13 @@ private:
     void publish_cmd(const NavCommand& cmd);
     void stop_drone();
 
+    /* --- OFFSET TYPES (AP_Follow style) --- */
+    enum class OffsetType {
+        NED = 0,          // Fixed offset in North-East-Down frame
+        RELATIVE = 1,     // Offset relative to target heading
+        VELOCITY = 2      // Dynamic offset based on velocity direction (current default)
+    };
+    
     /* --- HELPERS (PRIVATE) --- */
     void gps_to_map_enu_internal(double lat, double lon, double& e, double& n) const;  // Internal GPS conversion (no lock)
     void apply_kinematic_limits(double& desired_vel, double& last_vel, double& last_acc, 
@@ -164,6 +190,8 @@ private:
     bool estimate_error_too_large() const;  // AP_Follow style error check
     double calc_max_velocity_change(double accel_max, double jerk_max, double timeout_sec) const;
     void reset_shaping_state();  // Reset all kinematic shaping state
+    Eigen::Vector2d calculate_offset_enu(double desired_dist);  // Calculate offset based on mode
+    Eigen::Vector2d rotate_vector_2d(const Eigen::Vector2d& vec, double angle_rad) const;  // Rotate 2D vector
     
     /* --- MEMBERS --- */
     // QoS
@@ -175,8 +203,7 @@ private:
     rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr sub_drone_pose_;
     rclcpp::Subscription<sensor_msgs::msg::NavSatFix>::SharedPtr sub_target_gps_;
     rclcpp::Subscription<geometry_msgs::msg::Point>::SharedPtr sub_gimbal_;
-    rclcpp::Subscription<std_msgs::msg::String>::SharedPtr sub_flight_mode_;  // ArduPilot DDS
-    rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr sub_armed_;          // ArduPilot DDS
+    rclcpp::Subscription<ardupilot_msgs::msg::Status>::SharedPtr sub_status_;  // ArduPilot DDS
 
     // Publisher
     rclcpp::Publisher<geometry_msgs::msg::TwistStamped>::SharedPtr pub_cmd_vel_;
@@ -207,6 +234,7 @@ private:
     bool is_guided_ = false;         // GUIDED mode active
     bool is_armed_ = false;          // Vehicle armed
     std::string current_flight_mode_ = "";
+    int current_mode_int_ = 0;
 
     // Alpha-Beta Filters (thay thế Low-pass đơn giản)
     AlphaBetaFilter filter_vel_n_;   // Velocity North filter
@@ -236,8 +264,12 @@ private:
     double param_ff_centripetal_gain_; // Centripetal compensation gain
 
     // Parameters - Alpha-Beta Filter
+    bool param_filter_enable_;       // Enable/disable filtering
     double param_filter_alpha_;      // Position trust (0.0 - 1.0)
     double param_filter_beta_;       // Velocity update rate
+    double param_filter_beta_fast_;  // Beta when residual > threshold (fast response)
+    double param_filter_beta_slow_;  // Beta when residual <= threshold (smooth)
+    double param_filter_residual_threshold_; // Threshold (m) to switch to fast beta
     
     // Advanced Features - Adaptive Distance
     bool param_adaptive_dist_enable_;
@@ -253,8 +285,24 @@ private:
     // Advanced Features - Terrain Following
     bool param_terrain_follow_enable_;
     
+    // Advanced Features - Offset Mode (AP_Follow style)
+    OffsetType param_offset_type_;
+    Eigen::Vector3d param_offset_ned_;        // Static offset (North, East, Down) in meters
+    
+    // Advanced Features - Jitter Correction
+    bool param_jitter_correction_enable_;     // Enable/disable jitter correction
+    uint16_t param_jitter_max_lag_ms_;        // Max transport lag (ms)
+    uint16_t param_jitter_convergence_loops_; // Convergence samples
+    
     // Thread safety mutex for shared state between callbacks and control loop
     mutable std::mutex state_mutex_;
+    
+    // Jitter Correction (AP_Follow style)
+    std::optional<JitterCorrection> jitter_correction_;  // Initialized in setup_parameters()
+    
+    // Last estimate for error checking (AP_Follow style)
+    Eigen::Vector3d last_estimate_pos_enu_ = Eigen::Vector3d::Zero();
+    Eigen::Vector3d last_estimate_vel_enu_ = Eigen::Vector3d::Zero();
     
     // Control timing
     rclcpp::Time last_control_time_;
