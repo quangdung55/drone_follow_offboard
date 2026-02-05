@@ -1,0 +1,30 @@
+# Safety Limits Configuration for Smart Follow Node
+# Adjust these values based on your operational requirements and local regulations
+
+# GPS Health Thresholds
+gps_covariance_warn: 10.0      # Warning threshold (m²)
+gps_covariance_max: 25.0       # Maximum acceptable covariance (m²)
+gps_frozen_timeout: 2.0        # GPS stream timeout (seconds)
+
+# Altitude Safety Limits
+# NOTE: Adjust based on terrain elevation and regulations
+max_altitude_agl: 120.0        # Maximum altitude above ground level (m) - FAA Part 107 limit
+max_altitude_msl: 600.0        # Maximum altitude above sea level (m) - Adjust for terrain
+
+# Velocity Limits
+cmd_vel_forward_max: 5.0       # Maximum forward velocity (m/s)
+cmd_vel_lateral_max: 3.0       # Maximum lateral velocity (m/s)
+cmd_vel_vertical_max: 1.5      # Maximum vertical velocity (m/s)
+cmd_yaw_rate_max: 0.8          # Maximum yaw rate (rad/s) ≈ 45°/s
+
+# Emergency Descent Rate
+emergency_descent_rate: 1.5    # Descent rate during emergency (m/s)
+
+# Notes:
+# - AGL limit typically 120m (400ft) for recreational/commercial drones in many countries
+# - MSL limit should account for terrain elevation at launch site
+# - Example: If launching at 500m MSL terrain, set max_altitude_msl to 620m for 120m AGL
+# - GPS covariance thresholds depend on your GPS quality requirements
+#   - Good GPS: < 5 m²
+#   - Acceptable: 5-25 m²
+#   - Poor: > 25 m²

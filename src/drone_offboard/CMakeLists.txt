@@ -11,6 +11,7 @@ find_package(sensor_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(geographic_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
+find_package(diagnostic_msgs REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
 find_package(Eigen3 REQUIRED)
@@ -33,6 +34,7 @@ ament_target_dependencies(smart_follow_lib
   geometry_msgs
   geographic_msgs
   std_msgs
+  diagnostic_msgs
   tf2
   tf2_geometry_msgs
   ardupilot_msgs
@@ -52,6 +54,7 @@ ament_target_dependencies(smart_follow_node
   geometry_msgs
   geographic_msgs
   std_msgs
+  diagnostic_msgs
   tf2
   tf2_geometry_msgs
 )
@@ -70,6 +73,7 @@ ament_export_dependencies(
   geometry_msgs
   geographic_msgs
   std_msgs
+  diagnostic_msgs
   tf2
   tf2_geometry_msgs
   Eigen3
