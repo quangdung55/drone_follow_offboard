@@ -2,12 +2,12 @@
  * @file smart_follow_node.cpp
  * @brief Smart Follow Node - Thin ROS2 Adapter Layer
  * 
- * 🎯 ARCHITECTURE:
+ * ARCHITECTURE:
  * ===============
  * ROS2 Node: Chỉ lo pub/sub và quản lý tiến trình
  * Core Library: Xử lý toàn bộ thuật toán (NO ROS dependency)
  * 
- * 📊 Responsibilities:
+ * Responsibilities:
  * ===================
  * ROS Layer:
  *  - Subscribe topics (GPS, pose, gimbal, status)
@@ -22,7 +22,7 @@
  *  - Safety validators: Estimate checking, velocity limiting, altitude safety
  */
 
-#include "drone_offboard/smart_follow_node.hpp"
+#include "drone_offboard/ros2/smart_follow_node.hpp"
 
 // ROS messages (moved from header)
 #include <sensor_msgs/msg/nav_sat_fix.hpp>
@@ -38,23 +38,21 @@
 #include <algorithm>
 #include <stdexcept>
 
-// ArduPilot algorithms (moved from header)
-#include "drone_offboard/ap_control.hpp"
-#include "drone_offboard/ap_follow.hpp"
-#include "drone_offboard/JitterCorrection.h"
-
 // Core unified system (NO ROS DEPENDENCY!)
 #include "drone_offboard/core/system/follow_system.hpp"
 #include "drone_offboard/core/system/system_health.hpp"
 #include "drone_offboard/core/estimator/target_estimator.hpp"
 #include "drone_offboard/core/control/follow_controller.hpp"
 #include "drone_offboard/core/control/yaw_controller.hpp"
+#include "drone_offboard/core/control/ap_control.hpp"
+#include "drone_offboard/core/control/ap_follow.hpp"
 #include "drone_offboard/core/safety/estimate_validator.hpp"
 #include "drone_offboard/core/safety/velocity_limiter.hpp"
 #include "drone_offboard/core/safety/altitude_safety.hpp"
 #include "drone_offboard/core/safety/gps_health_monitor.hpp"
 #include "drone_offboard/core/safety/emergency_controller.hpp"
 #include "drone_offboard/core/math/conversions.hpp"
+#include "drone_offboard/core/math/JitterCorrection.h"
 
 using namespace std::chrono_literals;
 using namespace drone_follow::core;

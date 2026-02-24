@@ -1,4 +1,4 @@
-#include "drone_offboard/smart_follow_node.hpp"
+#include "drone_offboard/ros2/smart_follow_node.hpp"
 
 int main(int argc, char **argv) {
     rclcpp::init(argc, argv);

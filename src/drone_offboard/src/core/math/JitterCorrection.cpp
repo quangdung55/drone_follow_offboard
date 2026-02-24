@@ -32,7 +32,7 @@
   associated with that lag
  */
 
-#include "drone_offboard/JitterCorrection.h"
+#include "drone_offboard/core/math/JitterCorrection.h"
 
 // constructor
 JitterCorrection::JitterCorrection(uint16_t _max_lag_ms, uint16_t _convergence_loops) :

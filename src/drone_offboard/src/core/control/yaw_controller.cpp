@@ -4,7 +4,7 @@
  */
 
 #include "drone_offboard/core/control/yaw_controller.hpp"
-#include "drone_offboard/ap_control.hpp"
+#include "drone_offboard/core/control/ap_control.hpp"
 #include <cmath>
 
 namespace drone_follow {

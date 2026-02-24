@@ -1,5 +1,5 @@
 #include <gtest/gtest.h>
-#include "drone_offboard/smart_follow_node.hpp"
+#include "drone_offboard/ros2/smart_follow_node.hpp"
 #include <cmath>
 
 // ============================================================================
@@ -132,14 +132,14 @@ TEST(DroneStateTest, IsReady) {
 // ============================================================================
 
 TEST(AlphaBetaFilterTest, DefaultInitialization) {
-    AlphaBetaFilter filter;
+    drone_follow::core::AlphaBetaFilter filter;
     
     EXPECT_DOUBLE_EQ(filter.x, 0.0);
     EXPECT_DOUBLE_EQ(filter.v, 0.0);
 }
 
 TEST(AlphaBetaFilterTest, Reset) {
-    AlphaBetaFilter filter;
+    drone_follow::core::AlphaBetaFilter filter;
     filter.x = 10.0;
     filter.v = 5.0;
     
@@ -150,7 +150,7 @@ TEST(AlphaBetaFilterTest, Reset) {
 }
 
 TEST(AlphaBetaFilterTest, UpdateWithZeroDt) {
-    AlphaBetaFilter filter;
+    drone_follow::core::AlphaBetaFilter filter;
     filter.reset(0.0);
     
     // Update with dt=0 should not change state

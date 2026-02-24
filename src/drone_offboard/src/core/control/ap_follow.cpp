@@ -10,7 +10,7 @@
  * (at your option) any later version.
  */
 
-#include "drone_offboard/ap_follow.hpp"
+#include "drone_offboard/core/control/ap_follow.hpp"
 #include <iostream>
 
 namespace ap_follow {
